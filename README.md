@@ -1,175 +1,238 @@
-# Score-Based Generative Modeling through Stochastic Differential Equations
+# Score-SDE PyTorch 猫脸生成实验
 
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/score-based-generative-modeling-through-1/image-generation-on-cifar-10)](https://paperswithcode.com/sota/image-generation-on-cifar-10?p=score-based-generative-modeling-through-1)
+> A Chinese project README for cat-face generation experiments based on Yang Song's score_sde_pytorch, comparing VE/VP/sub-VP SDEs on a consumer 4GB GPU.
 
-This repo contains a PyTorch implementation for the paper [Score-Based Generative Modeling through Stochastic Differential Equations](https://openreview.net/forum?id=PxTIG12RRHS)
+本项目基于 [yang-song/score_sde_pytorch](https://github.com/yang-song/score_sde_pytorch) 二次开发，面向在消费级 GPU（4GB 显存）上学习并复现 *Score-Based Generative Modeling through Stochastic Differential Equations*（ICLR 2021）的核心思想，并在猫脸图像生成任务上系统对比 VE-SDE / VP-SDE / sub-VP-SDE 三类随机微分方程，配合学习率、模型容量、训练步数等超参数消融与网格搜索。上游原版英文 README 已保留为 [`UPSTREAM_README.md`](UPSTREAM_README.md)。
 
-by [Yang Song](https://yang-song.github.io), [Jascha Sohl-Dickstein](http://www.sohldickstein.com/), [Diederik P. Kingma](http://dpkingma.com/), [Abhishek Kumar](http://users.umiacs.umd.edu/~abhishek/), [Stefano Ermon](https://cs.stanford.edu/~ermon/), and [Ben Poole](https://cs.stanford.edu/~poole/)
+<p>
+  <img src="assets/python-badge.svg" alt="Python 3.8+" />
+  &nbsp;
+  <img src="assets/pytorch-badge.svg" alt="PyTorch 1.7+" />
+</p>
 
---------------------
+## 1. 项目背景与动机
 
-We propose a unified framework that generalizes and improves previous work on score-based generative models through the lens of stochastic differential equations (SDEs). In particular, we can transform data to a simple noise distribution with a continuous-time stochastic process described by an SDE. This SDE can be reversed for sample generation if we know the score of the marginal distributions at each intermediate time step, which can be estimated with score matching. The basic idea is captured in the figure below:
+Score-based 生成模型通过估计数据分布的得分函数（score），结合随机微分方程（SDE）将数据平滑地扰动为噪声，再通过逆向 SDE 还原出真实样本。该方法在 CIFAR-10 等数据集上取得了当时的 SOTA（FID 2.20）。然而原作者的实验依赖多卡大显存与超长训练，普通学习者难以复现。
 
-![schematic](assets/schematic.jpg)
+本项目的动机有两点：
 
-Our work enables a better understanding of existing approaches,  new sampling algorithms, exact likelihood computation, uniquely identifiable encoding, latent code manipulation, and brings new conditional generation abilities (including but not limited to class-conditional generation, inpainting and colorization) to the family of score-based generative models.
+- **学原理**：通过亲手实现并训练 VE / VP / sub-VP 三类 SDE，直观理解前向加噪与逆向采样、得分匹配损失、Predictor-Corrector 采样器等核心机制。
+- **做对比**：在同一台消费级 GPU 上，固定数据集（猫脸）与算力预算，横向对比三类 SDE 的收敛性与生成质量，并对学习率、模型容量（NF）、训练步数做消融，寻找 4GB 显存下的最优配置组合。
 
-All combined, we achieved an FID of **2.20** and an Inception score of **9.89** for unconditional generation on CIFAR-10, as well as high-fidelity generation of **1024px** Celeba-HQ images (samples below). In addition, we obtained a likelihood value of **2.99** bits/dim on uniformly dequantized CIFAR-10 images.
+## 2. 硬件与环境
 
-![FFHQ samples](assets/ffhq_samples.jpg)
+| 项目 | 配置 |
+|:----|:----|
+| GPU | 消费级显卡，约 4GB VRAM（与 DDPM / LDM 实验共用同一台机器） |
+| Python | 3.8+ |
+| PyTorch | 1.7.0+（CUDA） |
+| 核心依赖 | `ml-collections`、`torchvision`、`ninja`、`absl-py`、`tensorflow`（仅用于 FID/IS 统计与数据集 IO，可按需精简） |
 
-## What does this code do?
-Aside from the **NCSN++** and **DDPM++** models in our paper, this codebase also re-implements many previous score-based models in one place, including **NCSN** from [Generative Modeling by Estimating Gradients of the Data Distribution](https://arxiv.org/abs/1907.05600), **NCSNv2** from [Improved Techniques for Training Score-Based Generative Models](https://arxiv.org/abs/2006.09011), and **DDPM** from [Denoising Diffusion Probabilistic Models](https://arxiv.org/abs/2006.11239). 
+完整依赖见 [`requirements.txt`](requirements.txt)。在显存受限场景下，建议先用 `batch_size=2~4`、`nf=16~32` 的小配置跑通流程，再逐步加大。
 
-It supports training new models, evaluating the sample quality and likelihoods of existing models. We carefully designed the code to be modular and easily extensible to new SDEs, predictors, or correctors.
+## 3. 主要工作
 
-## **Integration with 🤗 Diffusers library**
+- **三类 SDE 对比**：基于 `sde_lib.py` 中的 `VESDE` / `VPSDE` / `subVPSDE` 实现，在相同数据与算力下横向比较收敛速度与最终 loss。
+- **超参数消融**：学习率（`1e-4 / 2e-4 / 5e-4`）、模型容量 NF（`16 / 32`）、训练步数（`5000 → 50000`）、warmup 与 EMA rate 等。
+- **网格搜索**：[`grid_search.py`](grid_search.py) 以 `sde_type × lr × model_nf × warmup` 等维度自动枚举组合，批量训练并汇总结果。
+- **结果汇总**：所有实验的 loss 曲线、超参与采样结果汇总到 [`experiments_summary.xlsx`](experiments_summary.xlsx)。
+- **样本生成**：按工程约定，每组实验均生成可视觉检查的图像样本；结果统一进 Excel 汇总。
+- **演示**：[`Score_SDE_demo_PyTorch.ipynb`](Score_SDE_demo_PyTorch.ipynb) 含已执行结果，可直接阅读流程与可视化。
 
-Most models are now also available in 🧨 Diffusers and accesible via the [ScoreSdeVE pipeline](https://huggingface.co/docs/diffusers/api/pipelines/score_sde_ve).
+## 4. 关键发现
 
-Diffusers allows you to test score sde based models in PyTorch in just a couple lines of code.
+在 4GB 显存、固定算力预算下的工程结论：
 
-You can install diffusers as follows:
+1. **VESDE 优于 VPSDE 与 sub-VPSDE**：收敛更稳定、最终 loss 更低，是消费级 GPU 上的首选。
+2. **学习率 `5e-4` 优于 `2e-4 / 1e-4`**：收敛更快，在相同步数下 loss 更低。
+3. **模型容量 `NF=32` 优于 `NF=16`**：尽管显存占用更高，但表达能力与生成质量更好。
+4. **训练步数 `5000 → 50000`，loss 降低约 60%**：在算力允许范围内尽量延长训练可显著受益。
 
+> 工程约定：每组实验都必须产出可视化样本，并把结果汇总到 Excel 文件，便于横向比较。
+
+## 5. 目录结构
+
+```text
+score_sde_pytorch-main/
+├── main.py                         # 上游统一入口（train/eval）
+├── run_lib.py                     # 训练/评估循环封装
+├── sde_lib.py                      # VE/VP/sub-VP 三类 SDE 定义
+├── sampling.py                     # Predictor-Corrector 采样器
+├── losses.py                       # 得分匹配损失
+├── likelihood.py                   # 对数似然 / 概率流 ODE
+├── evaluation.py                   # FID/IS/KID 评估
+├── controllable_generation.py      # 可控生成（类别条件/补全/上色）
+├── datasets.py                     # 数据集加载
+├── utils.py
+│
+├── train_cat_sde.py                # 猫脸 SDE 基础训练
+├── train_cat_sde_conditional.py    # 猫脸条件 SDE 训练
+├── train_cat_generator.py          # 猫脸生成器训练
+├── run_sde_train.py                # 训练运行入口（默认 VESDE, NF=32）
+├── run_full_experiment.py          # 完整实验（sde_type/lr/nf/n_iters 可配）
+├── run_optimized_full.py           # 优化版完整实验
+├── run_opt.py                     # 参数搜索
+├── grid_search.py                  # 网格搜索（sde_type×lr×nf×warmup）
+├── generate_cat_from_cifar.py      # 从 CIFAR 生成猫
+├── analyze_and_generate.py         # 分析 + 生成
+│
+├── models/                         # 模型库
+│   ├── ncsnpp.py                   # NCSN++（主干，本项目主要使用）
+│   ├── ncsnv2.py                   # NCSNv2
+│   ├── ddpm.py                     # DDPM
+│   ├── layers.py / layerspp.py     # 网络层
+│   ├── normalization.py            # 归一化
+│   ├── ema.py                      # 指数滑动平均
+│   ├── up_or_down_sampling.py
+│   ├── utils.py
+│   └── __init__.py
+│
+├── configs/                        # ml_collections 配置
+│   ├── default_cifar10_configs.py
+│   ├── default_celeba_configs.py
+│   ├── default_lsun_configs.py
+│   ├── ve/                         # VE-SDE 配置
+│   │   ├── cifar10_ncsnpp_deep_continuous.py
+│   │   ├── cifar10_ncsnpp_continuous.py
+│   │   ├── cifar10_ncsnpp.py
+│   │   ├── cifar10_ddpm.py
+│   │   ├── celeba_ncsnpp.py
+│   │   ├── celebahq_256_ncsnpp_continuous.py
+│   │   ├── ffhq_256_ncsnpp_continuous.py
+│   │   ├── bedroom_ncsnpp_continuous.py
+│   │   ├── church_ncsnpp_continuous.py
+│   │   ├── ncsn/                    # 旧版 NCSN
+│   │   └── ncsnv2/
+│   ├── vp/                         # VP-SDE 配置
+│   │   ├── cifar10_ncsnpp_deep_continuous.py
+│   │   ├── cifar10_ncsnpp_continuous.py
+│   │   ├── cifar10_ncsnpp.py
+│   │   ├── cifar10_ddpmpp_deep_continuous.py
+│   │   ├── cifar10_ddpmpp_continuous.py
+│   │   ├── cifar10_ddpmpp.py
+│   │   └── ddpm/                    # cifar10 / cifar10_continuous / cifar10_unconditional / celebahq / bedroom / church
+│   └── subvp/                      # sub-VP SDE 配置
+│       ├── cifar10_ncsnpp_deep_continuous.py
+│       ├── cifar10_ncsnpp_continuous.py
+│       ├── cifar10_ddpmpp_deep_continuous.py
+│       ├── cifar10_ddpmpp_continuous.py
+│       └── cifar10_ddpm_continuous.py
+│
+├── assets/                         # 示意图与徽章
+├── experiments_summary.xlsx        # 实验结果汇总（工程约定）
+├── Score_SDE_demo_PyTorch.ipynb    # 演示 notebook（含执行结果）
+├── requirements.txt
+├── LICENSE                         # Apache-2.0
+├── UPSTREAM_README.md              # Yang Song 原版英文 README
+└── README.md                       # 本文件
 ```
-pip install diffusers torch accelerate
-```
 
-And then try out the models with just a couple lines of code:
+## 6. 快速开始
 
-```python
-from diffusers import DiffusionPipeline
+### 6.1 安装环境
 
-model_id = "google/ncsnpp-ffhq-1024"
-
-# load model and scheduler
-sde_ve = DiffusionPipeline.from_pretrained(model_id)
-
-# run pipeline in inference (sample random noise and denoise)
-image = sde_ve().images[0]
-
-
-# save image
-image[0].save("sde_ve_generated_image.png")
-```
-
-More models can be found directly [on the Hub](https://huggingface.co/models?library=diffusers&pipeline_tag=unconditional-image-generation&sort=downloads&search=ncsnpp).
-
-## JAX version
-
-Please find a JAX implementation [here](https://github.com/yang-song/score_sde), which additionally supports class-conditional generation with a pre-trained classifier, and resuming an evalution process after pre-emption.
-
-###  JAX vs. PyTorch
-
-In general, this PyTorch version consumes less memory but runs slower than JAX. Here is a benchmark on training an NCSN++ cont. model with VE SDE. Hardware is 4x Nvidia Tesla V100 GPUs (32GB)
-| Framework | Time (second per step) | Memory usage in total (GB) |
-|:----:|:----:|:----:|
-|PyTorch | 0.56 | 20.6|
-|JAX (`n_jitted_steps=1`)| 0.30 | 29.7 |
-|JAX (`n_jitted_steps=5`) | 0.20 | 74.8|
-
-## How to run the code
-
-### Dependencies
-
-Run the following to install a subset of necessary python packages for our code
 ```sh
 pip install -r requirements.txt
 ```
 
-### Stats files for quantitative evaluation
+### 6.2 选择配置
 
-We provide the stats file for CIFAR-10. You can download [`cifar10_stats.npz`](https://drive.google.com/file/d/14UB27-Spi8VjZYKST3ZcT8YVhAluiFWI/view?usp=sharing)  and save it to `assets/stats/`. Check out [#5](https://github.com/yang-song/score_sde/pull/5) on how to compute this stats file for new datasets.
+配置文件位于 `configs/` 下，按 SDE 类型分组，命名形如 `configs/<ve|vp|subvp>/<dataset>_<model>[_continuous][_deep].py`：
 
-### Usage
+- VE-SDE：`configs/ve/cifar10_ncsnpp_deep_continuous.py`
+- VP-SDE：`configs/vp/cifar10_ncsnpp_deep_continuous.py`
+- sub-VP SDE：`configs/subvp/cifar10_ncsnpp_deep_continuous.py`
 
-Train and evaluate our models through `main.py`.
+### 6.3 训练（上游入口，使用配置文件）
 
 ```sh
-main.py:
-  --config: Training configuration.
-    (default: 'None')
-  --eval_folder: The folder name for storing evaluation results
-    (default: 'eval')
-  --mode: <train|eval>: Running mode: train or eval
-  --workdir: Working directory
+# 以 VE-SDE + NCSN++ 为例
+python main.py --config configs/ve/cifar10_ncsnpp_deep_continuous.py \
+               --mode train \
+               --workdir results/ve_cifar10
+
+# 改用 VP-SDE
+python main.py --config configs/vp/cifar10_ncsnpp_deep_continuous.py \
+               --mode train \
+               --workdir results/vp_cifar10
 ```
 
-* `config` is the path to the config file. Our prescribed config files are provided in `configs/`. They are formatted according to [`ml_collections`](https://github.com/google/ml_collections) and should be quite self-explanatory.
+> 4GB 显存提示：上游默认 `nf=128`、`num_res_blocks=8`，单卡难以容纳。建议改用本项目的轻量脚本（见 6.4），或手动将配置中的 `model.nf` 调小到 16/32、`batch_size` 调到 2~4。
 
-  **Naming conventions of config files**: the path of a config file is a combination of the following dimensions:
-  *  dataset: One of `cifar10`, `celeba`, `celebahq`, `celebahq_256`, `ffhq_256`, `celebahq`, `ffhq`.
-  * model: One of `ncsn`, `ncsnv2`, `ncsnpp`, `ddpm`, `ddpmpp`.
-  * continuous: train the model with continuously sampled time steps. 
+### 6.4 训练（本项目脚本，内联轻量配置）
 
-*  `workdir` is the path that stores all artifacts of one experiment, like checkpoints, samples, and evaluation results.
+本项目脚本在内部以 `ml_collections` 内联配置，默认面向小显存优化：
 
-* `eval_folder` is the name of a subfolder in `workdir` that stores all artifacts of the evaluation process, like meta checkpoints for pre-emption prevention, image samples, and numpy dumps of quantitative results.
+```sh
+# 单次完整实验（默认 VESDE, lr=2e-4, nf=16, n_iters=2000）
+python run_full_experiment.py
 
-* `mode` is either "train" or "eval". When set to "train", it starts the training of a new model, or resumes the training of an old model if its meta-checkpoints (for resuming running after pre-emption in a cloud environment) exist in `workdir/checkpoints-meta` . When set to "eval", it can do an arbitrary combination of the following
+# 基础训练入口（默认 VESDE, nf=32, batch_size=2）
+python run_sde_train.py
+```
 
-  * Evaluate the loss function on the test / validation dataset.
+如需切换 SDE / 学习率 / NF，直接修改脚本中的 `get_config(sde_type, lr, batch_size, n_iters, model_nf, ...)` 参数，或在 `run_full_experiment.py` / `grid_search.py` 中调整网格。
 
-  * Generate a fixed number of samples and compute its Inception score, FID, or KID. Prior to evaluation, stats files must have already been downloaded/computed and stored in `assets/stats`.
+### 6.5 采样与评估
 
-  * Compute the log-likelihood on the training or test dataset.
+```sh
+# 生成样本并计算 FID/IS（需先准备 assets/stats/ 下的统计文件）
+python main.py --config configs/ve/cifar10_ncsnpp_deep_continuous.py \
+               --mode eval \
+               --workdir results/ve_cifar10 \
+               --config.eval.enable_sampling
+```
 
-  These functionalities can be configured through config files, or more conveniently, through the command-line support of the `ml_collections` package. For example, to generate samples and evaluate sample quality, supply the  `--config.eval.enable_sampling` flag; to compute log-likelihoods, supply the `--config.eval.enable_bpd` flag, and specify `--config.eval.dataset=train/test` to indicate whether to compute the likelihoods on the training or test dataset.
+### 6.6 网格搜索
 
-## How to extend the code
-* **New SDEs**: inherent the `sde_lib.SDE` abstract class and implement all abstract methods. The `discretize()` method is optional and the default is Euler-Maruyama discretization. Existing sampling methods and likelihood computation will automatically work for this new SDE.
-* **New predictors**: inherent the `sampling.Predictor` abstract class, implement the `update_fn` abstract method, and register its name with `@register_predictor`. The new predictor can be directly used in `sampling.get_pc_sampler` for Predictor-Corrector sampling, and all other controllable generation methods in `controllable_generation.py`.
-* **New correctors**: inherent the `sampling.Corrector` abstract class, implement the `update_fn` abstract method, and register its name with `@register_corrector`. The new corrector can be directly used in `sampling.get_pc_sampler`, and all other controllable generation methods in `controllable_generation.py`.
+```sh
+# 自动枚举 sde_type × lr × model_nf × warmup 组合
+python grid_search.py
+```
 
-## Pretrained checkpoints
-All checkpoints are provided in this [Google drive](https://drive.google.com/drive/folders/1tFmF_uh57O6lx9ggtZT_5LdonVK2cV-e?usp=sharing).
+`grid_search.py` 默认网格覆盖 `sde_type ∈ {vesde, vpsde}`、`lr ∈ {1e-4, 2e-4, 5e-4}`、`model_nf ∈ {16, 32}`、`warmup ∈ {0, 500}`，结果汇总到 `experiments_summary.xlsx`。
 
-**Instructions**: You may find two checkpoints for some models. The first checkpoint (with a smaller number) is the one that we reported FID scores in our paper's Table 3 (also corresponding to the FID and IS columns in the table below). The second checkpoint (with a larger number) is the one that we reported likelihood values and FIDs of black-box ODE samplers in our paper's Table 2 (also FID(ODE) and NNL (bits/dim) columns in the table below). The former corresponds to the smallest FID during the course of training (every 50k iterations). The later is the last checkpoint during training.
+## 7. 与上游项目的差异
 
-Per Google's policy, we cannot release our original CelebA and CelebA-HQ checkpoints. That said, I have re-trained models on FFHQ 1024px, FFHQ 256px and CelebA-HQ 256px with personal resources, and they achieved similar performance to our internal checkpoints. 
+本项目保留上游全部模型、配置与核心模块，在其之上做面向消费级 GPU 与猫脸生成任务的二次开发：
 
-Here is a detailed list of checkpoints and their results reported in the paper. **FID (ODE)** corresponds to the sample quality of black-box ODE solver applied to the probability flow ODE.
+- **新增训练 / 实验脚本**：`train_cat_sde.py`、`train_cat_sde_conditional.py`、`train_cat_generator.py`、`run_sde_train.py`、`run_full_experiment.py`、`run_optimized_full.py`、`run_opt.py`、`grid_search.py`、`generate_cat_from_cifar.py`、`analyze_and_generate.py`。
+- **轻量化配置**：内联配置将 `nf` 降至 16/32、`batch_size` 降至 2~4、`n_iters` 缩短，适配 4GB 显存；并按 NF 自动调整 `ch_mult` 与 `attn_resolutions`。
+- **消融与汇总**：新增 `grid_search.py` 自动枚举超参组合，结果统一写入 `experiments_summary.xlsx`。
+- **演示**：新增 `Score_SDE_demo_PyTorch.ipynb`（含已执行结果）。
+- **保留上游**：`models/`、`configs/`、`sde_lib.py`、`sampling.py`、`losses.py` 等核心文件与上游一致；原版英文 README 保留为 `UPSTREAM_README.md`。
 
-| Checkpoint path | FID | IS | FID (ODE) | NNL (bits/dim) |
-|:----------|:-------:|:----------:|:----------:|:----------:|
-| [`ve/cifar10_ncsnpp/`](https://drive.google.com/drive/folders/1sP4GwvrYiI-sDPTp7sKYzsxJLGVamVMZ?usp=sharing) |  2.45 | 9.73 | - | - |
-| [`ve/cifar10_ncsnpp_continuous/`](https://drive.google.com/drive/folders/1b0gy_LLgO_DaQBgoWXwlVnL_rcAUgREh?usp=sharing) | 2.38 | 9.83 | - | - |
-| [`ve/cifar10_ncsnpp_deep_continuous/`](https://drive.google.com/drive/folders/11s6A_xM7qiztdj8AHQWqaIAUSC3I7uX2?usp=sharing) | **2.20** | **9.89** | - | - |
-| [`vp/cifar10_ddpm/`](https://drive.google.com/drive/folders/1zDKcy3xbsN3F4AfyB_DfY_1oho89iKcf?usp=sharing) | 3.24 | - | 3.37 | 3.28 |
-| [`vp/cifar10_ddpm_continuous`](https://drive.google.com/drive/folders/1RHNxW1qY-mTr0JMAE5t4V181Hi_aVWXK?usp=sharing) | - | - | 3.69| 3.21 |
-| [`vp/cifar10_ddpmpp`](https://drive.google.com/drive/folders/1zOVj03ZBcq339p5QEKJPh2bBrxR_HOCM?usp=sharing) | 2.78 | 9.64 | - | - |
-| [`vp/cifar10_ddpmpp_continuous`](https://drive.google.com/drive/folders/1xYjVMx10N9ivQQBIsEoXEeu9nvSGTBrC?usp=sharing) | 2.55 | 9.58 | 3.93 | 3.16 |
-| [`vp/cifar10_ddpmpp_deep_continuous`](https://drive.google.com/drive/folders/1ZMLBiu9j7-rpdTQu8M2LlHAEQq4xRYrj?usp=sharing) | 2.41 | 9.68 | 3.08 | 3.13 |
-| [`subvp/cifar10_ddpm_continuous`](https://drive.google.com/drive/folders/1DeebpmBkCxlZx89t3z45Te37T7BPOzd2?usp=sharing) | - | - | 3.56 | 3.05 |
-| [`subvp/cifar10_ddpmpp_continuous`](https://drive.google.com/drive/folders/1bLgmnEAZnysRZfWt8qN3omGfijJ_B884?usp=sharing) | 2.61 | 9.56 | 3.16 | 3.02 |
-| [`subvp/cifar10_ddpmpp_deep_continuous`](https://drive.google.com/drive/folders/16QGkviGcizSbIPRk37-YksUhlNIna4Ys?usp=sharing) | 2.41 | 9.57 | **2.92** | **2.99** |
+## 8. 关键文件速查表
 
-| Checkpoint path | Samples |
-|:-----|:------:|
-| [`ve/bedroom_ncsnpp_continuous`](https://drive.google.com/drive/folders/18GmxDvfGR8se9uFucc9uweeVrX_GzuUG?usp=sharing) | ![bedroom_samples](assets/bedroom.jpeg) |
-| [`ve/church_ncsnpp_continuous`](https://drive.google.com/drive/folders/1zVChA0HrnJU66Jkt4P6KOnlREhBMc4Yh?usp=sharing) | ![church_samples](assets/church.jpeg) |
-| [`ve/ffhq_1024_ncsnpp_continuous`](https://drive.google.com/drive/folders/1ZqLNr_kH0o9DxvwSlrQPMmkrhEnXhBm2?usp=sharing) |![ffhq_1024](assets/ffhq_1024.jpeg)|
-| [`ve/ffhq_256_ncsnpp_continuous`](https://drive.google.com/drive/folders/1KG72ZKUCUa8dDcA03hOf1BsnK8kBcdPD?usp=sharing) |![ffhq_256_samples](assets/ffhq_256.jpg)|
-| [`ve/celebahq_256_ncsnpp_continuous`](https://drive.google.com/drive/folders/19VJ7UZTE-ytGX6z5rl-tumW9c0Ps3itk?usp=sharing) |![celebahq_256_samples](assets/celebahq_256.jpg)|
+| 文件 | 作用 |
+|:----|:----|
+| `sde_lib.py` | 定义 `VESDE` / `VPSDE` / `subVPSDE` 三类 SDE 及其前向/逆向过程 |
+| `sampling.py` | Predictor-Corrector 采样器（`reverse_diffusion`、`langevin` 等） |
+| `losses.py` | 得分匹配损失（DSM / SSM 等） |
+| `likelihood.py` | 概率流 ODE 与对数似然计算 |
+| `evaluation.py` | 样本质量评估（FID / IS / KID） |
+| `controllable_generation.py` | 类别条件、补全、上色等可控生成 |
+| `datasets.py` | 数据集加载与预处理 |
+| `main.py` | 上游统一训练 / 评估入口 |
+| `run_lib.py` | 训练 / 评估循环封装 |
+| `models/ncsnpp.py` | NCSN++ 模型（本项目主干） |
+| `models/ema.py` | 指数滑动平均（EMA） |
+| `run_sde_train.py` | 训练运行入口（默认 VESDE, NF=32） |
+| `run_full_experiment.py` | 完整实验（sde_type / lr / nf / n_iters 可配） |
+| `grid_search.py` | 超参网格搜索 |
+| `experiments_summary.xlsx` | 实验结果汇总 |
+| `Score_SDE_demo_PyTorch.ipynb` | 演示 notebook（含执行结果） |
 
+## 9. License
 
-## Demonstrations and tutorials
-| Link | Description|
-|:----:|:-----|
-|[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1dRR_0gNRmfLtPavX2APzUggBuXyjWW55?usp=sharing)  | Load our pretrained checkpoints and play with sampling, likelihood computation, and controllable synthesis (JAX + FLAX)|
-|[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/17lTrPLTt_0EDXa4hkbHmbAFQEkpRDZnh?usp=sharing) | Load our pretrained checkpoints and play with sampling, likelihood computation, and controllable synthesis (PyTorch) |
-|[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1SeXMpILhkJPjXUaesvzEhc3Ke6Zl_zxJ?usp=sharing) | Tutorial of score-based generative models in JAX + FLAX |
-|[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/120kYYBOVa1i0TD85RjlEkFjaWDxSFUx3?usp=sharing)| Tutorial of score-based generative models in PyTorch |
+本项目沿用上游 [yang-song/score_sde_pytorch](https://github.com/yang-song/score_sde_pytorch) 的 **Apache-2.0** 许可证，详见 [`LICENSE`](LICENSE)。本仓库的二次开发部分（训练脚本、配置、实验汇总等）同样以 Apache-2.0 发布。
 
+## 10. 致谢
 
-## Tips
-* When using the JAX codebase, you can jit multiple training steps together to improve training speed at the cost of more memory usage. This can be set via `config.training.n_jitted_steps`. For CIFAR-10, we recommend using `config.training.n_jitted_steps=5` when your GPU/TPU has sufficient memory; otherwise we recommend using `config.training.n_jitted_steps=1`. Our current implementation requires `config.training.log_freq` to be dividable by `n_jitted_steps` for logging and checkpointing to work normally.
-* The `snr` (signal-to-noise ratio) parameter of `LangevinCorrector` somewhat behaves like a temperature parameter. Larger `snr` typically results in smoother samples, while smaller `snr` gives more diverse but lower quality samples. Typical values of `snr` is `0.05 - 0.2`, and it requires tuning to strike the sweet spot.
-* For VE SDEs, we recommend choosing `config.model.sigma_max` to be the maximum pairwise distance between data samples in the training dataset.
+感谢 [Yang Song](https://yang-song.github.io)、Jascha Sohl-Dickstein、Diederik P. Kingma、Abhishek Kumar、Stefano Ermon、Ben Poole 等作者提出 Score-based SDE 生成框架并开源 [score_sde_pytorch](https://github.com/yang-song/score_sde_pytorch)。本项目在其代码基础上进行学习与二次开发，上游原版说明见 [`UPSTREAM_README.md`](UPSTREAM_README.md)。
 
-## References
+如原作者论文对你的研究有帮助，请引用：
 
-If you find the code useful for your research, please consider citing
 ```bib
 @inproceedings{
   song2021scorebased,
@@ -180,10 +243,3 @@ If you find the code useful for your research, please consider citing
   url={https://openreview.net/forum?id=PxTIG12RRHS}
 }
 ```
-
-This work is built upon some previous papers which might also interest you:
-
-* Song, Yang, and Stefano Ermon. "Generative Modeling by Estimating Gradients of the Data Distribution." *Proceedings of the 33rd Annual Conference on Neural Information Processing Systems*. 2019.
-* Song, Yang, and Stefano Ermon. "Improved techniques for training score-based generative models." *Proceedings of the 34th Annual Conference on Neural Information Processing Systems*. 2020.
-* Ho, Jonathan, Ajay Jain, and Pieter Abbeel. "Denoising diffusion probabilistic models." *Proceedings of the 34th Annual Conference on Neural Information Processing Systems*. 2020.
-
