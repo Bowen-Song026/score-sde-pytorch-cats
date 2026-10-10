@@ -1,0 +1,44 @@
+# Compiled python modules.
+*.pyc
+
+# Byte-compiled
+__pycache__/
+_pycache__/
+.cache/
+.idea/
+
+# Python egg metadata, regenerated from source files by setuptools.
+/*.egg-info
+.eggs/
+
+# PyPI distribution artifacts.
+build/
+dist/
+
+# Tests
+.pytest_cache/
+
+# === 训练 checkpoint 和数据集（不入库：体积过大，可由训练重新生成）===
+experiments/
+data/
+workdir/
+samples/
+checkpoints/
+samples_*.png
+
+# === 模型权重和特征文件 ===
+*.pth
+*.pt
+*.ckpt
+*.pkl
+*.npz
+*.h5
+*.safetensors
+
+# === 临时/日志 ===
+*.pid
+*.lock
+*.log
+
+# Other
+*.DS_Store
